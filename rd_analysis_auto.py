@@ -1,39 +1,55 @@
 # rd_analysis.py
+import argparse
 import subprocess
 import os
 import re
 import json
 from pathlib import Path
 from collections import defaultdict
+from loguru import logger
+
+def _find_tool(versioned, fallback):
+    """versioned(e.g. clang-14) 우선 탐색, 없으면 fallback(e.g. clang) 사용. 둘 다 없으면 RuntimeError."""
+    for name in (versioned, fallback):
+        if subprocess.run(["which", name], capture_output=True).returncode == 0:
+            logger.info(f"사용할 도구: {name}")
+            return name
+    raise RuntimeError(f"{versioned} 또는 {fallback} 을 찾을 수 없습니다. LLVM이 설치되어 있는지 확인하세요.")
+
 
 class RDAnalyzer:
     def __init__(self, llvm_build_dir=None):
+        self.clang = _find_tool("clang-14", "clang")
+        self.opt   = _find_tool("opt-14",   "opt")
+
         if llvm_build_dir is None:
-            # 스크립트 위치 기준으로 build 디렉토리 경로 설정
             script_dir = Path(__file__).parent
             self.build_dir = script_dir / "build"
         else:
             self.build_dir = Path(llvm_build_dir)
-        
-        # 절대 경로로 변환
+
         self.build_dir = self.build_dir.resolve()
-        
-        # OS에 따라 라이브러리 확장자 자동 선택
+
         import platform
-        if platform.system() == 'Darwin':  # macOS
-            plugin_name = "libReusePass.dylib"
-        else:  # Linux 등
-            plugin_name = "libReusePass.so"
-        
+        plugin_name = "libReusePass.dylib" if platform.system() == "Darwin" else "libReusePass.so"
         self.plugin_path = self.build_dir / plugin_name
         
-    def c_to_ir(self, c_file):
+    def c_to_ir(self, c_file, use_rtems=False):
         """C 파일을 LLVM IR로 변환"""
         ir_file = Path(c_file).with_suffix('.ll')
-        cmd = [
-            'clang', '-O0', '-Xclang', '-disable-O0-optnone', 
-            '-g', '-emit-llvm', '-S', str(c_file), '-o', str(ir_file)
-        ]
+        if use_rtems:
+            cmd = [
+                self.clang, '-O0', '-Xclang', '-disable-O0-optnone',
+                '--target=sparc-rtems6',
+                '-isystem', '/opt/rtems/6/sparc-rtems6/gr740/lib/include',
+                '-isystem', '/opt/rtems/6/sparc-rtems6/include',
+                '-g', '-emit-llvm', '-S', str(c_file), '-o', str(ir_file)
+            ]
+        else:
+            cmd = [
+                self.clang, '-O0', '-Xclang', '-disable-O0-optnone',
+                '-g', '-emit-llvm', '-S', str(c_file), '-o', str(ir_file)
+            ]
         subprocess.run(cmd, check=True)
         return ir_file
     
@@ -42,7 +58,7 @@ class RDAnalyzer:
         
         ir_file_abs = Path(ir_file).resolve()
         cmd = [
-            'opt', '-load-pass-plugin', str(self.plugin_path),
+            self.opt, '-load-pass-plugin', str(self.plugin_path),
             '-passes=function(reuse-pass)', str(ir_file_abs), '-disable-output'
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=self.build_dir)
@@ -122,30 +138,30 @@ class RDAnalyzer:
         
         return cachefriendly_scores
     
-    def analyze_file(self, c_file):
+    def analyze_file(self, c_file, use_rtems=False):
         """단일 C 파일 전체 분석"""
-        print(f"분석 중: {c_file}")
-        
+        logger.info(f"분석 중: {c_file}")
+
         # 1. C → IR 변환
-        ir_file = self.c_to_ir(c_file)
-        print(f"IR 파일 생성: {ir_file}")
-        
+        ir_file = self.c_to_ir(c_file, use_rtems=use_rtems)
+        logger.info(f"IR 파일 생성: {ir_file}")
+
         # 2. ReusePass 실행
         rd_output = self.run_reuse_pass(ir_file)
-        print(f"ReusePass 출력 길이: {len(rd_output)}")
-        print(f"ReusePass 출력 내용:\n{rd_output}")
-        
+        logger.info(f"ReusePass 출력 길이: {len(rd_output)}")
+        logger.debug(f"ReusePass 출력 내용:\n{rd_output}")
+
         # 3. 결과 파싱
         rd_data = self.parse_rd_output(rd_output)
-        print(f"파싱된 RD 데이터: {dict(rd_data)}")
-        
+        logger.debug(f"파싱된 RD 데이터: {dict(rd_data)}")
+
         # 4. 평균 계산
         averages = self.calculate_averages(rd_data)
-        print(f"계산된 평균: {averages}")
-        
+        logger.debug(f"계산된 평균: {averages}")
+
         # 5. Cache Friendly Score 계산
         cachefriendly_scores = self.calculate_cachefriendly_score(rd_data, averages)
-        print(f"계산된 Cache Friendly Scores: {cachefriendly_scores}")
+        logger.info(f"계산된 Cache Friendly Scores: {cachefriendly_scores}")
         
         return {
             'file': str(c_file),
@@ -154,36 +170,52 @@ class RDAnalyzer:
             'cachefriendly_scores': cachefriendly_scores  # 함수별 Cache Friendly Score
         }
     
-    def batch_analyze(self, c_files):
+    def batch_analyze(self, c_files, use_rtems=False):
         """여러 C 파일 일괄 분석"""
         results = []
         for c_file in c_files:
             try:
-                result = self.analyze_file(c_file)
+                result = self.analyze_file(c_file, use_rtems=use_rtems)
                 results.append(result)
             except Exception as e:
-                print(f"오류: {c_file} - {e}")
-        
+                logger.error(f"오류: {c_file} - {e}")
+
         return results
     
     def generate_report(self, results, output_file="rd_analysis_report.json"):
         """분석 결과를 JSON으로 저장"""
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
-        print(f"결과 저장: {output_file}")
+        logger.info(f"결과 저장: {output_file}")
 
-# 사용 예시, task C 파일을 넣을 것
 if __name__ == "__main__":
-    analyzer = RDAnalyzer()
-    
-    # 단일 파일 분석
-    # result = analyzer.analyze_file("test.c")
     import glob
-    c_files = glob.glob("tasks/*.c")
-    
+
+    parser = argparse.ArgumentParser(description="Reuse Distance 분석 도구")
+    parser.add_argument(
+        "--rtems", action="store_true",
+        help="LLVM IR 변환 시 RTEMS 컴파일 옵션 사용 (--target=sparc-rtems6 등)"
+    )
+    parser.add_argument(
+        "--input", default="tasks/*.c",
+        help="분석할 C 파일 경로 또는 glob 패턴 (기본값: tasks/*.c)"
+    )
+    parser.add_argument(
+        "--output", default="rd_analysis_report.json",
+        help="분석 결과 JSON 출력 파일 경로 (기본값: rd_analysis_report.json)"
+    )
+    args = parser.parse_args()
+
+    log_file = Path(args.output).with_suffix(".log")
+    logger.add(log_file, rotation=None, encoding="utf-8")
+
+    analyzer = RDAnalyzer()
+    c_files = glob.glob(args.input)
+
     if c_files:
-        print(f"발견된 C 파일들: {c_files}")
-        results = analyzer.batch_analyze(c_files)
-        analyzer.generate_report(results)
+        logger.info(f"발견된 C 파일들: {c_files}")
+        logger.info(f"RTEMS 옵션: {'사용' if args.rtems else '미사용'}")
+        results = analyzer.batch_analyze(c_files, use_rtems=args.rtems)
+        analyzer.generate_report(results, output_file=args.output)
     else:
-        print("분석할 .c 파일이 없습니다.")
+        logger.warning("분석할 .c 파일이 없습니다.")
