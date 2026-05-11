@@ -5,35 +5,37 @@ import re
 import json
 from pathlib import Path
 from collections import defaultdict
+def _find_tool(versioned, fallback):
+    """versioned(e.g. clang-14) 우선 탐색, 없으면 fallback(e.g. clang) 사용. 둘 다 없으면 RuntimeError."""
+    for name in (versioned, fallback):
+        if subprocess.run(["which", name], capture_output=True).returncode == 0:
+            logger.info(f"사용할 도구: {name}")
+            return name
+    raise RuntimeError(f"{versioned} 또는 {fallback} 을 찾을 수 없습니다. LLVM이 설치되어 있는지 확인하세요.")
+
 
 class RDAnalyzer:
     def __init__(self, llvm_build_dir=None):
+        self.clang = _find_tool("clang-14", "clang")
+        self.opt   = _find_tool("opt-14",   "opt")
+
         if llvm_build_dir is None:
             # 스크립트 위치 기준으로 build 디렉토리 경로 설정
             script_dir = Path(__file__).parent
             self.build_dir = script_dir / "build"
         else:
             self.build_dir = Path(llvm_build_dir)
-        
-        # 절대 경로로 변환
+
         self.build_dir = self.build_dir.resolve()
-        
-        # OS에 따라 라이브러리 확장자 자동 선택
+
         import platform
-        if platform.system() == 'Darwin':  # macOS
-            plugin_name = "libReusePass.dylib"
-        else:  # Linux 등
-            plugin_name = "libReusePass.so"
-        
+        plugin_name = "libReusePass.dylib" if platform.system() == "Darwin" else "libReusePass.so"
         self.plugin_path = self.build_dir / plugin_name
         
     def c_to_ir(self, c_file):
         """C 파일을 LLVM IR로 변환"""
         ir_file = Path(c_file).with_suffix('.ll')
-        cmd = [
-            'clang', '-O0', '-Xclang', '-disable-O0-optnone', 
-            '-g', '-emit-llvm', '-S', str(c_file), '-o', str(ir_file)
-        ]
+                self.clang, '-O0', '-Xclang', '-disable-O0-optnone',
         subprocess.run(cmd, check=True)
         return ir_file
     
@@ -42,7 +44,7 @@ class RDAnalyzer:
         
         ir_file_abs = Path(ir_file).resolve()
         cmd = [
-            'opt', '-load-pass-plugin', str(self.plugin_path),
+            self.opt, '-load-pass-plugin', str(self.plugin_path),
             '-passes=function(reuse-pass)', str(ir_file_abs), '-disable-output'
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=self.build_dir)
