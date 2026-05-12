@@ -1,7 +1,6 @@
 # rd_analysis.py
 import argparse
 import subprocess
-import os
 import re
 import json
 from pathlib import Path
@@ -184,14 +183,11 @@ class RDAnalyzer:
     
     def generate_report(self, results, output_file="rd_analysis_report.json"):
         """분석 결과를 JSON으로 저장"""
-        if not os.path.exists(os.path.dirname(output_file)):
-            os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        if not os.path.exists("./logs"):
-            os.makedirs("./logs", exist_ok=True)
-
-        with open(output_file, 'w') as f:
+        output_path = Path(output_file).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, 'w') as f:
             json.dump(results, f, indent=2)
-        logger.info(f"결과 저장: {output_file}")
+        logger.info(f"결과 저장: {output_path}")
 
 if __name__ == "__main__":
     import glob
@@ -211,7 +207,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    log_file = Path(args.output).with_suffix(".log")
+    log_dir = Path(args.output).resolve().parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / Path(args.output).with_suffix(".log").name
+
     logger.add(log_file, rotation=None, encoding="utf-8")
 
     analyzer = RDAnalyzer()
