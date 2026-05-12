@@ -184,6 +184,11 @@ class RDAnalyzer:
     
     def generate_report(self, results, output_file="rd_analysis_report.json"):
         """분석 결과를 JSON으로 저장"""
+        if not os.path.exists(os.path.dirname(output_file)):
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        if not os.path.exists("./logs"):
+            os.makedirs("./logs", exist_ok=True)
+
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
         logger.info(f"결과 저장: {output_file}")
@@ -202,7 +207,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--output", default="rd_analysis_report.json",
-        help="분석 결과 JSON 출력 파일 경로 (기본값: rd_analysis_report.json)"
+        help="분석 결과 JSON 출력 파일 경로 (기본값: rd_analysis_report.json); logs/ 디렉토리에 로그 파일도 생성됩니다."
     )
     args = parser.parse_args()
 
