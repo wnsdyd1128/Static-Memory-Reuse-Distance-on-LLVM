@@ -14,7 +14,11 @@ include_directories(${LLVM_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 
 # MODULE로 빌드 (플러그인 방식)
-add_library(ReusePass MODULE ReusePass.cpp)
+add_library(ReusePass MODULE
+  ReusePass.cpp
+  LoopAnalysis.cpp
+  BranchAnalysis.cpp
+)
 
 # 가시성 설정
 set_target_properties(ReusePass PROPERTIES
